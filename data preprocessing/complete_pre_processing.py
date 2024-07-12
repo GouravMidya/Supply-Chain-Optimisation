@@ -54,41 +54,123 @@ def split_items(row):
         return pd.DataFrame([row.drop('Items').tolist() + [item.strip()] for item in items], 
                             columns=row.drop('Items').index.tolist() + ['Item'])
 
-# Create a cache
-item_cache = {}
-
-#Split the Item name apart from the Serving Sizes and extras
-def extract_main_item(item_name):
-    if pd.isna(item_name):
-        return "Unknown Item"
-    return re.split(r'\s*[\(\-]', str(item_name))[0].strip()
-
-#Finding similar names and clubbing them together
-def standardize_items(items, unique_main_items, threshold=80, batch_size=1000):
-    def standardize_batch(batch):
-        results = []
-        for item in batch:
-            if pd.isna(item):
-                results.append("Unknown Item")
-            elif item in item_cache:
-                results.append(item_cache[item])
-            else:
-                main_item = extract_main_item(str(item))
-                match = process.extractOne(main_item, unique_main_items)
-                if match[1] >= threshold:
-                    result = match[0]
-                else:
-                    result = main_item
-                item_cache[item] = result
-                results.append(result)
-        return results
-
-    results = []
-    for i in tqdm(range(0, len(items), batch_size), desc="Standardizing Items"):
-        batch = items[i:i+batch_size]
-        results.extend(standardize_batch(batch))
+def standardize_items(df):
+    # Create a dictionary to store Standardized_Items, sizes, categories, and special requests
+    standard_dict = {}
     
-    return results
+    # Regular expressions for extracting size information
+    size_patterns = {
+        'Small': r'\bSmall\b|\s-\s*Small(?:\s*-\s*Serves\s*\d+(?:-\d+)?)?\b',
+        'Regular': r'\bRegular\b|\(Serves 1\)|\(Serves - 1\)|\s-\s*Regular(?:\s*-\s*Serves\s*1)?\b',
+        'Medium': r'\bMedium\b|\(Serves 1-2\)|\(Serves 1 -2\)|\s-\s*Medium\s*-\s*Serves\s*1-2\b',
+        'Large': r'\bLarge\b|\(Serves 2-3\)|\(Serves 2 -3\)|\s-\s*Large\s*-\s*Serves\s*2-3\b',
+        'Half': r'\bHalf\b|\(Half\)|\[500 Ml\]|\s-\s*Half(?:\s*-\s*500\s*Ml)?\b',
+        'Full': r'\bFull\b|\[650 Ml\]|\s-\s*Full(?:\s*-\s*650\s*Ml)?\b',
+        'Half Kilo': r'\bHalf Kilo\b|\bHalf Kg\b|\(Serves 3-4\)|\(Serves 3 - 4\)|\s-\s*Half\s*Kilo(?:\s*-\s*Serves\s*3-4)?\b',
+        'Kilo': r'\bKilo\b|\(Serves 5-6\)|\(Serves 5 -6\)|\s-\s*Kilo(?:\s*-\s*Serves\s*5-6)?\b'
+    }
+    
+    # Function to extract size from item name
+    def extract_size(name):
+        for size, pattern in size_patterns.items():
+            if re.search(pattern, name, re.IGNORECASE):
+                return size
+        return 'Regular'  # Default size if not specified
+    
+    # Function to determine category
+    def determine_category(name):
+        if 'combo' in name.lower() or 'meal' in name.lower():
+            return 'Combo Meals'
+        elif any(word in name.lower() for word in ['biryani', 'rice', 'pulao']):
+            return 'Biryani & Rice'
+        elif any(word in name.lower() for word in ['chicken', 'mutton', 'prawns', 'egg', 'murg', 'gosht', 'keema']):
+            return 'Non-Veg Main Course'
+        elif any(word in name.lower() for word in ['paneer', 'veg', 'gobi', 'aloo', 'dal']):
+            return 'Veg Main Course'
+        elif any(word in name.lower() for word in ['naan', 'roti', 'bread', 'paratha']):
+            return 'Breads'
+        elif any(word in name.lower() for word in ['soup', 'salad', 'kebab', 'tikka', 'starter']):
+            return 'Starters'
+        elif any(word in name.lower() for word in ['water', 'drink', 'soda', 'chaas', 'buttermilk', 'lassi']):
+            return 'Beverages'
+        elif any(word in name.lower() for word in ['pudding', 'caramel', 'custard']):
+            return 'Desserts'
+        else:
+            return 'Others'
+    
+    # Function to extract special requests
+    def extract_special_requests(name):
+        special_requests = []
+        patterns = [
+            r'Medium Spicy',
+            r'Less Spicy',
+            r'Spicy',
+            r'Boneless',
+            r'Red',
+            r'White',
+            r'Chef Special',
+            r'Extra Cheese',
+            r'Extra Sauce'
+        ]
+        for pattern in patterns:
+            if re.search(pattern, name, re.IGNORECASE):
+                special_requests.append(pattern)
+        return ', '.join(special_requests) if special_requests else None
+
+    # Function to clean and standardize item names
+    def clean_name(item):
+        # Remove size information and special requests
+        clean = re.sub(r'\(.*?\)|\[.*?\]|\s-\s*(?:Small|Medium|Large|Regular|Half|Full|Half Kilo|Kilo)(?:\s*-\s*Serves\s*\d+(?:-\d+)?)?', '', item)
+        for request in (extract_special_requests(item).split(', ') if extract_special_requests(item) else []):
+            clean = clean.replace(request, '')
+        
+        # Remove any remaining parentheses and brackets
+        clean = re.sub(r'[(){}\[\]]', '', clean)
+        clean = re.sub(r'\s*-\s*', ' ', clean)
+        
+        # Remove extra spaces and dashes
+        clean = re.sub(r'\s+', ' ', clean)
+        clean = clean.strip()
+        
+        # Convert to title case for consistency
+        clean = clean.title()
+        
+        return clean
+
+    # First pass: Clean all names
+    cleaned_items = {item: clean_name(item) for item in df['Item'].unique()}
+
+    # Second pass: Apply fuzzy matching
+    unique_cleaned_items = list(set(cleaned_items.values()))
+    for item in tqdm(df['Item'].unique(), desc="Applying fuzzy matching"):
+        cleaned_item = cleaned_items[item]
+        best_match = max(unique_cleaned_items, key=lambda x: fuzz.ratio(cleaned_item, x))
+        if fuzz.ratio(cleaned_item, best_match) >= 80:  # Adjust this threshold as needed
+            standard_dict[item] = {
+                'Standardized_Item': best_match,
+                'Size': extract_size(item),
+                'Category': determine_category(best_match),
+                'Special Requests': extract_special_requests(item)
+            }
+        else:
+            standard_dict[item] = {
+                'Standardized_Item': cleaned_item,
+                'Size': extract_size(item),
+                'Category': determine_category(cleaned_item),
+                'Special Requests': extract_special_requests(item)
+            }
+    
+    # Apply standardization to the DataFrame
+    df['Standardized_Item'] = df['Item'].map(lambda x: standard_dict[x]['Standardized_Item'])
+    df['Size'] = df['Item'].map(lambda x: standard_dict[x]['Size'])
+    df['Category'] = df['Item'].map(lambda x: standard_dict[x]['Category'])
+    df['Special Requests'] = df['Item'].map(lambda x: standard_dict[x]['Special Requests'])
+    
+    return df
+
+def process_data(df):
+    df = standardize_items(df)
+    return df
 
 # Define a function to convert to datetime
 def convert_to_datetime(x):
@@ -107,19 +189,6 @@ def get_time_group(dt):
         return '19:00-23:00'
     else:
         return '23:00-03:00'
-
-def categorize_size(size):
-    if pd.isna(size):
-        return 'Unknown'
-    size = str(size).lower()
-    if 'small' in size or 's' == size:
-        return 'Small'
-    elif 'medium' in size or 'm' == size:
-        return 'Medium'
-    elif 'large' in size or 'l' == size:
-        return 'Large'
-    else:
-        return 'Other'
 
 def get_indian_season(month):
     if 3 <= month <= 5:
@@ -154,22 +223,13 @@ tqdm.pandas(desc="Splitting Items")
 # Apply the function to each row with progress bar and concatenate the results
 expanded_df = pd.concat(filtered_df.progress_apply(split_items, axis=1).tolist(), ignore_index=True)
 # Reset the index if needed
-#expanded_df = expanded_df.reset_index(drop=True)
+#expanded_df = expanded_df.reset_index(drop=True)'
 
-#%% Normalizing the items name and seperating the serving Sizes
-# Get unique main items once to avoid recalculating for each row
-unique_main_items = expanded_df['Item'].apply(extract_main_item).unique()
+#%% Normalizing the items name and seperating the serving Sizes as well as Category 
 
-# Apply the standardization
-expanded_df['Standardized_Item'] = standardize_items(expanded_df['Item'].values, unique_main_items)
+expanded_df = process_data(expanded_df)
 
-
-#%% Extract size information, handling null values
-tqdm.pandas(desc="Extracting Sizes")
-expanded_df['Size'] = expanded_df['Item'].progress_apply(lambda x: re.search(r'\((.*?)\)', str(x)).group(1) if pd.notna(x) and '(' in str(x) else None)
-
-#%%
-
+#%% Data Visualization
 data = expanded_df['Standardized_Item'].value_counts()
 
 # Set up the figure size
@@ -179,7 +239,7 @@ plt.figure(figsize=(12, 15))
 sns.barplot(x=data.values[:30], y=data.index[:30], palette='viridis')
 
 # Customize the plot
-plt.title('Top 20 Standardized Items', fontsize=16)
+plt.title('Top 30 Standardized Items', fontsize=16)
 plt.xlabel('Count', fontsize=12)
 plt.ylabel('Standardized Item', fontsize=12)
 
@@ -198,6 +258,7 @@ print(f"Count range: {data.min()} to {data.max()}")
 # Manual corrections for common items
 manual_corrections = {
     'Caramel Custerd': 'Caramel Custard',
+    'Prawns Hyderabdi Dum Biryani': 'Prawns Hyderabadi Dum Biryani'
     # Add more corrections here
 }
 
@@ -218,14 +279,11 @@ expanded_df['Date'] = expanded_df['Created'].dt.date
 if 'Quantity' not in expanded_df.columns:
     expanded_df['Quantity'] = 1
 
-# Handle NaN values in the 'Size' column
-expanded_df['Size'] = expanded_df['Size'].fillna('Unknown')
-
-# Group by date, time_group, Standardized_Item, and Size, then sum the quantities
-grouped_df = expanded_df.groupby(['Date', 'TimeGroup', 'Standardized_Item', 'Size'])['Quantity'].sum().reset_index()
+# Group by date, time_group, Standardized_Item, Size, and Category, then sum the quantities
+grouped_df = expanded_df.groupby(['Date', 'TimeGroup', 'Standardized_Item', 'Size', 'Category'])['Quantity'].sum().reset_index()
 
 # Sort the resulting dataframe
-grouped_df = grouped_df.sort_values(['Date', 'TimeGroup', 'Standardized_Item', 'Size'])
+grouped_df = grouped_df.sort_values(['Date', 'TimeGroup', 'Standardized_Item', 'Size', 'Category'])
 
 # Convert 'Date' to datetime
 grouped_df['Date'] = pd.to_datetime(grouped_df['Date'])
@@ -261,8 +319,7 @@ grouped_df['ItemPopularity'] = grouped_df.groupby(['Standardized_Item', 'Size'])
 
 #%% 5. Size-related features
 
-grouped_df['SizeCategory'] = grouped_df['Size'].apply(categorize_size)
-grouped_df['IsStandardSize'] = grouped_df['SizeCategory'].isin(['Small', 'Medium', 'Large']).astype(int)
+#grouped_df['IsStandardSize'] = grouped_df['SizeCategory'].isin(['Small', 'Medium', 'Large']).astype(int)
 
 #%% 6. Seasonality features
 grouped_df['Season'] = grouped_df['Month'].apply(get_indian_season)
