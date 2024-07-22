@@ -60,17 +60,16 @@ def standardize_items(df):
     
     # Regular expressions for extracting size information
     size_patterns = {
+        'Half Kilo': r'\bHalf Kilo\b|\bHalf Kg\b|\(Serves 3-4\)|\(Serves 3 - 4\)|\s-\s*Half\s*Kilo(?:\s*-\s*Serves\s*3-4)?\b',
+        'Kilo': r'\bKilo\b|\(Serves 5-6\)|\(Serves 5 -6\)|\s-\s*Kilo(?:\s*-\s*Serves\s*5-6)?\b',
         'Small': r'\bSmall\b|\s-\s*Small(?:\s*-\s*Serves\s*\d+(?:-\d+)?)?\b',
         'Regular': r'\bRegular\b|\(Serves 1\)|\(Serves - 1\)|\s-\s*Regular(?:\s*-\s*Serves\s*1)?\b',
         'Medium': r'\bMedium\b|\(Serves 1-2\)|\(Serves 1 -2\)|\s-\s*Medium\s*-\s*Serves\s*1-2\b',
         'Large': r'\bLarge\b|\(Serves 2-3\)|\(Serves 2 -3\)|\s-\s*Large\s*-\s*Serves\s*2-3\b',
         'Half': r'\bHalf\b|\(Half\)|\[500 Ml\]|\s-\s*Half(?:\s*-\s*500\s*Ml)?\b',
-        'Full': r'\bFull\b|\[650 Ml\]|\s-\s*Full(?:\s*-\s*650\s*Ml)?\b',
-        'Half Kilo': r'\bHalf Kilo\b|\bHalf Kg\b|\(Serves 3-4\)|\(Serves 3 - 4\)|\s-\s*Half\s*Kilo(?:\s*-\s*Serves\s*3-4)?\b',
-        'Kilo': r'\bKilo\b|\(Serves 5-6\)|\(Serves 5 -6\)|\s-\s*Kilo(?:\s*-\s*Serves\s*5-6)?\b'
+        'Full': r'\bFull\b|\[650 Ml\]|\s-\s*Full(?:\s*-\s*650\s*Ml)?\b'
     }
     
-    # Function to extract size from item name
     def extract_size(name):
         for size, pattern in size_patterns.items():
             if re.search(pattern, name, re.IGNORECASE):
@@ -110,7 +109,8 @@ def standardize_items(df):
             r'White',
             r'Chef Special',
             r'Extra Cheese',
-            r'Extra Sauce'
+            r'Extra Sauce',
+            r'Off'
         ]
         for pattern in patterns:
             if re.search(pattern, name, re.IGNORECASE):
@@ -120,7 +120,7 @@ def standardize_items(df):
     # Function to clean and standardize item names
     def clean_name(item):
         # Remove size information and special requests
-        clean = re.sub(r'\(.*?\)|\[.*?\]|\s-\s*(?:Small|Medium|Large|Regular|Half|Full|Half Kilo|Kilo)(?:\s*-\s*Serves\s*\d+(?:-\d+)?)?', '', item)
+        clean = re.sub(r'\(.*?\)|\[.*?\]|\s-\s*(?:Small|Medium|Large|Regular|Half Kilo|Half Kg|Kilo|Half|Full)(?:\s*-\s*Serves\s*\d+(?:-\d+)?)?', '', item)
         for request in (extract_special_requests(item).split(', ') if extract_special_requests(item) else []):
             clean = clean.replace(request, '')
         
@@ -165,6 +165,15 @@ def standardize_items(df):
     df['Size'] = df['Item'].map(lambda x: standard_dict[x]['Size'])
     df['Category'] = df['Item'].map(lambda x: standard_dict[x]['Category'])
     df['Special Requests'] = df['Item'].map(lambda x: standard_dict[x]['Special Requests'])
+    
+    # Manual corrections for common items
+    manual_corrections = {
+        'Caramel Custerd': 'Caramel Custard',
+        'Prawns Hyderabdi Dum Biryani': 'Prawns Hyderabadi Dum Biryani'
+        # Add more corrections here
+    }
+    
+    df['Standardized_Item'] = df['Standardized_Item'].replace(manual_corrections)
     
     return df
 
@@ -254,16 +263,6 @@ plt.show()
 # Print some additional information
 print(f"Total number of unique categories: {len(data)}")
 print(f"Count range: {data.min()} to {data.max()}")
-#%%
-# Manual corrections for common items
-manual_corrections = {
-    'Caramel Custerd': 'Caramel Custard',
-    'Prawns Hyderabdi Dum Biryani': 'Prawns Hyderabadi Dum Biryani'
-    # Add more corrections here
-}
-
-expanded_df['Standardized_Item'] = expanded_df['Standardized_Item'].replace(manual_corrections)
-
 
 #%%
 # Convert 'Created' to datetime
@@ -278,7 +277,7 @@ expanded_df['Date'] = expanded_df['Created'].dt.date
 # Ensure 'Quantity' column exists
 if 'Quantity' not in expanded_df.columns:
     expanded_df['Quantity'] = 1
-
+#%%
 # Group by date, time_group, Standardized_Item, Size, and Category, then sum the quantities
 grouped_df = expanded_df.groupby(['Date', 'TimeGroup', 'Standardized_Item', 'Size', 'Category'])['Quantity'].sum().reset_index()
 
@@ -337,10 +336,13 @@ grouped_df['ItemTimeGroup'] = grouped_df['Standardized_Item'] + '_' + grouped_df
 
 #%% 10. Encoding features
 
+# Create a copy of grouped_df for scaling
+scaled_df = grouped_df.copy()
+
 # Frequency Encoding
 for col in ['Standardized_Item', 'Size']:
     frequency = grouped_df[col].value_counts(normalize=True)
-    grouped_df[f'{col}_Frequency'] = grouped_df[col].map(frequency)
+    scaled_df[f'{col}_Frequency'] = scaled_df[col].map(frequency)
 
 # Target Encoding (we already have this for 'Standardized_Item')
 def target_encode(df, column, target):
@@ -351,18 +353,21 @@ def target_encode(df, column, target):
     smooth = 1 / (1 + np.exp(-(counts - 10) / 10))
     return smooth * means + (1 - smooth) * global_mean
 
-grouped_df['ItemTargetEncode'] = grouped_df['Standardized_Item'].map(target_encode(grouped_df, 'Standardized_Item', 'Quantity'))
+scaled_df['ItemTargetEncode'] = scaled_df['Standardized_Item'].map(target_encode(scaled_df, 'Standardized_Item', 'Quantity'))
 
 # One-hot encoding only for low-cardinality categorical variables
-grouped_df = pd.get_dummies(grouped_df, columns=['Season', 'TimeGroup'], 
+scaled_df = pd.get_dummies(scaled_df, columns=['Season', 'TimeGroup'], 
                     prefix=['Season', 'TimeGroup'])
 
-# ... (rest of the code remains the same)
 # Handle missing values
-grouped_df = grouped_df.fillna(method='ffill').fillna(method='bfill')
+scaled_df = scaled_df.fillna(method='ffill').fillna(method='bfill')
 
 # Normalize numerical features
-numerical_columns = grouped_df.select_dtypes(include=[np.number]).columns
-grouped_df[numerical_columns] = grouped_df[numerical_columns].apply(zscore)
+numerical_columns = scaled_df.select_dtypes(include=[np.number]).columns
+scaled_df[numerical_columns] = scaled_df[numerical_columns].apply(zscore)
 
+print("Columns in scaled_df:")
+print(scaled_df.columns)
+
+print("\nColumns in grouped_df:")
 print(grouped_df.columns)
