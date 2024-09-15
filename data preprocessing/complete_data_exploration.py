@@ -15,7 +15,7 @@ from fuzzywuzzy import process
 from tqdm import tqdm
 
 #%% Specify the folder path containing the Excel files
-folder_path = 'C:/Users/goura/Documents/Supply Chain Optimisation/persiana order data'
+folder_path = 'C:/Users/goura/Documents/Supply Chain Optimisation/small dataset'
 
 # Initialize an empty list to store individual DataFrames
 dfs = []
@@ -26,6 +26,16 @@ for filename in os.listdir(folder_path):
         
         # Read the Excel file, specifying the header row
         df = pd.read_excel(file_path, header=4)  # 0-based index, so 3 means 4th row
+        
+        # Extract the location from the filename
+        location_match = re.search(r'Orders_([A-Za-z]+)_', filename)
+        if location_match:
+            location = location_match.group(1)
+        else:
+            location = 'Unknown'  # Default value if no location found
+        
+        # Add the location column to the DataFrame
+        df['Location'] = location
         
         # Append the DataFrame to the list
         dfs.append(df)
